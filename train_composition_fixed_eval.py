@@ -42,9 +42,12 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+# train_composition_fixed_eval_v3.py
+# 复制原文件并修改evaluate_ar_correct函数
+
 @torch.no_grad()
 def evaluate_ar_correct(model, test_file, stages, stoi, itos, device, G, temperature=0.1, top_k=10, max_eval_per_type=50):
-    """修复后的AR评估函数（正确处理字符编码）"""
+    """修复后的AR评估函数（正确解析生成格式）"""
     model.eval()
     
     S1, S2, S3 = stages
@@ -65,12 +68,15 @@ def evaluate_ar_correct(model, test_file, stages, stoi, itos, device, G, tempera
         if len(parts) >= 2:
             try:
                 source, target = int(parts[0]), int(parts[1])
+                # 提取真实路径（从第2个位置开始）
+                true_path = [int(p) for p in parts[2:] if p.isdigit()]
+                
                 if source in S1 and target in S2:
-                    test_by_type['S1->S2'].append((source, target, parts))
+                    test_by_type['S1->S2'].append((source, target, true_path))
                 elif source in S2 and target in S3:
-                    test_by_type['S2->S3'].append((source, target, parts))
+                    test_by_type['S2->S3'].append((source, target, true_path))
                 elif source in S1 and target in S3:
-                    test_by_type['S1->S3'].append((source, target, parts))
+                    test_by_type['S1->S3'].append((source, target, true_path))
             except:
                 continue
     
@@ -88,83 +94,88 @@ def evaluate_ar_correct(model, test_file, stages, stoi, itos, device, G, tempera
         
         # 评估
         for idx in range(n_eval):
-            source, target, true_path_parts = test_cases[idx]
+            source, target, true_path = test_cases[idx]
             
-            # 构建prompt字符串：source target source
-            prompt_str = f"{source} {target} {source}"
+            # 构建prompt：source target（不包含路径开始）
+            prompt_str = f"{source} {target}"
             
             # 按字符编码
             prompt_ids = []
             for char in prompt_str:
                 if char in stoi:
                     prompt_ids.append(stoi[char])
-                else:
-                    prompt_ids.append(0)  # PAD for unknown chars
-            
-            if len(prompt_ids) == 0:
-                results[path_type]['errors']['encoding_error'] += 1
-                continue
             
             x = torch.tensor(prompt_ids, dtype=torch.long, device=device).unsqueeze(0)
             
             # 生成
             with torch.no_grad():
-                y = model.generate(x, max_new_tokens=30, temperature=temperature, top_k=top_k)
+                y = model.generate(x, max_new_tokens=50, temperature=temperature, top_k=top_k)
             
-            # 解码路径
-            generated_ids = y[0].tolist()[len(prompt_ids):]  # 跳过prompt部分
+            # 获取生成的tokens（包括prompt）
+            full_sequence = y[0].tolist()
             
-            # 将token ids转换回字符
-            generated_chars = []
-            for token_id in generated_ids:
+            # 将整个序列解码为字符串
+            full_chars = []
+            for token_id in full_sequence:
                 if token_id == 1:  # newline
                     break
-                if token_id in itos and token_id > 1:  # 跳过PAD和newline
-                    generated_chars.append(itos[token_id])
+                if token_id in itos and token_id > 1:
+                    full_chars.append(itos[token_id])
             
-            # 将字符序列解析为数字列表
-            generated_str = ''.join(generated_chars)
-            generated = []
+            # 解析整个序列的数字
+            full_str = ''.join(full_chars)
+            all_numbers = []
             current_num = ""
             
-            for char in generated_str:
+            for char in full_str:
                 if char == ' ':
                     if current_num and current_num.isdigit():
-                        generated.append(int(current_num))
+                        all_numbers.append(int(current_num))
                     current_num = ""
                 elif char.isdigit():
                     current_num += char
-                else:
-                    # 非数字非空格字符，重置
-                    if current_num and current_num.isdigit():
-                        generated.append(int(current_num))
-                    current_num = ""
             
-            # 处理最后一个数字
             if current_num and current_num.isdigit():
-                generated.append(int(current_num))
+                all_numbers.append(int(current_num))
+            
+            # 提取生成的路径（从第2个数字开始，因为前两个是source和target）
+            if len(all_numbers) >= 3:
+                generated_path = all_numbers[2:]  # 跳过source和target
+            else:
+                generated_path = []
             
             # 验证结果
             success = False
             error_type = None
             
-            if len(generated) >= 2:
-                if generated[0] == source and generated[-1] == target:
+            if len(generated_path) >= 2:
+                # 检查路径的起点和终点
+                if generated_path[0] == source and generated_path[-1] == target:
                     if path_type == 'S1->S3':
                         # 对于S1->S3，检查是否经过S2
-                        has_s2 = any(node in S2 for node in generated[1:-1])
+                        has_s2 = any(node in S2 for node in generated_path[1:-1])
                         if has_s2:
-                            success = True
+                            # 验证路径有效性
+                            path_valid = True
+                            for i in range(len(generated_path) - 1):
+                                if not G.has_edge(str(generated_path[i]), str(generated_path[i+1])):
+                                    path_valid = False
+                                    error_type = 'invalid_edge'
+                                    break
+                            if path_valid:
+                                success = True
                         else:
                             error_type = 'no_s2_intermediate'
                     else:
                         # 对于S1->S2和S2->S3，验证路径有效性
-                        success = True
-                        for i in range(len(generated) - 1):
-                            if not G.has_edge(str(generated[i]), str(generated[i+1])):
-                                success = False
+                        path_valid = True
+                        for i in range(len(generated_path) - 1):
+                            if not G.has_edge(str(generated_path[i]), str(generated_path[i+1])):
+                                path_valid = False
                                 error_type = 'invalid_edge'
                                 break
+                        if path_valid:
+                            success = True
                 else:
                     error_type = 'wrong_endpoints'
             else:
@@ -176,9 +187,9 @@ def evaluate_ar_correct(model, test_file, stages, stoi, itos, device, G, tempera
                     results[path_type]['examples']['success'].append({
                         'source': source,
                         'target': target, 
-                        'generated': generated,
-                        'prompt': prompt_str,
-                        'true': [int(x) for x in true_path_parts if x.isdigit()]
+                        'generated': generated_path,
+                        'true': true_path,
+                        'full_output': all_numbers
                     })
             else:
                 results[path_type]['errors'][error_type if error_type else 'unknown'] += 1
@@ -186,9 +197,10 @@ def evaluate_ar_correct(model, test_file, stages, stoi, itos, device, G, tempera
                     results[path_type]['examples']['failure'].append({
                         'source': source,
                         'target': target,
-                        'generated': generated,
+                        'generated': generated_path,
                         'error': error_type,
-                        'prompt': prompt_str
+                        'full_output': all_numbers,
+                        'true': true_path
                     })
         
         # 计算准确率
