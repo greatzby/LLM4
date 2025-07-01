@@ -1,0 +1,11 @@
+[2025-07-02 02:21:54,821][INFO] ============================================================
+[2025-07-02 02:21:54,821][INFO] Configuration: {'experiment_name': 'composition', 'total_nodes': 90, 'n_layer': 1, 'n_head': 1, 'n_embd': 120, 'max_iters': 200000, 'test_interval': 1000, 'device': 'cuda:0', 'learning_rate': 0.0005, 'batch_size': 1024, 'train_paths_per_pair': 10, 'checkpoint_interval': 5000, 'seed': 42, 'training_mode': 'standard', 'mixed_ratio': 0.1, 'temperature': 0.8, 'top_k': 50}
+[2025-07-02 02:21:54,821][INFO] ============================================================
+[2025-07-02 02:21:59,752][INFO] Iter 0: loss=0.0000, TF: S1->S3=0.00%, AR: S1->S3=0.00%
+[2025-07-02 02:22:26,096][INFO] Iter 1000: loss=2.1088, TF: S1->S3=0.00%, AR: S1->S3=0.00%
+[2025-07-02 02:22:52,337][INFO] Iter 2000: loss=0.6813, TF: S1->S3=0.00%, AR: S1->S3=0.00%
+[2025-07-02 02:23:18,616][INFO] Iter 3000: loss=0.6719, TF: S1->S3=0.00%, AR: S1->S3=0.00%
+[2025-07-02 02:23:44,852][INFO] Iter 4000: loss=0.6701, TF: S1->S3=0.00%, AR: S1->S3=0.00%
+[2025-07-02 02:24:11,071][INFO] Iter 5000: loss=0.6692, TF: S1->S3=0.00%, AR: S1->S3=0.00%
+[2025-07-02 02:24:37,321][INFO] Iter 6000: loss=0.6687, TF: S1->S3=0.00%, AR: S1->S3=0.00%
+[2025-07-02 02:25:03,608][INFO] Iter 7000: loss=0.6684, TF: S1->S3=0.00%, AR: S1->S3=0.00%
