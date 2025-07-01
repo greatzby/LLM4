@@ -36,6 +36,7 @@ def prepare_composition_data_fixed(
             '../composition_graph.graphml',
             'data/simple_graph/composition_graph.graphml',
             'simple_graph/composition_graph.graphml'
+            'data/simple_graph/composition_90/composition_graph.graphml'
         ]
         for path in possible_paths:
             if os.path.exists(path):
