@@ -1,4 +1,4 @@
-# prepare_composition_fixed.py
+# prepare_composition_fixed.py (路径修复版)
 import os
 import random
 import pickle
@@ -7,8 +7,8 @@ import networkx as nx
 from collections import defaultdict
 
 def prepare_composition_data_fixed(
-    graph_file='data/simple_graph/composition_graph.graphml',
-    output_dir='data/simple_graph/composition_90_fixed',
+    graph_file=None,  # 将自动查找
+    output_dir=None,  # 将自动设置
     train_paths_per_pair=10,
     val_ratio=0.15,
     test_samples_per_type=50,
@@ -18,6 +18,38 @@ def prepare_composition_data_fixed(
     
     random.seed(seed)
     np.random.seed(seed)
+    
+    # 自动确定路径
+    # 检查当前目录结构
+    if os.path.exists('composition_graph.graphml'):
+        # 在 data/simple_graph 目录中
+        graph_file = 'composition_graph.graphml'
+        output_dir = 'composition_90_fixed'
+    elif os.path.exists('data/simple_graph/composition_graph.graphml'):
+        # 在项目根目录
+        graph_file = 'data/simple_graph/composition_graph.graphml'
+        output_dir = 'data/simple_graph/composition_90_fixed'
+    else:
+        # 尝试查找
+        possible_paths = [
+            'composition_graph.graphml',
+            '../composition_graph.graphml',
+            'data/simple_graph/composition_graph.graphml',
+            'simple_graph/composition_graph.graphml'
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                graph_file = path
+                # 设置输出目录在同一位置
+                base_dir = os.path.dirname(path)
+                output_dir = os.path.join(base_dir, 'composition_90_fixed')
+                break
+        
+        if graph_file is None:
+            raise FileNotFoundError("Cannot find composition_graph.graphml. Please check your directory.")
+    
+    print(f"Using graph file: {graph_file}")
+    print(f"Output directory: {output_dir}")
     
     # 创建输出目录
     os.makedirs(output_dir, exist_ok=True)
@@ -232,7 +264,7 @@ def prepare_composition_data_fixed(
         print(f"  Total tokens: {len(arr)}")
         print(f"  Sequences: {len(arr) // (block_size + 1)}")
     
-    # 保存图
+    # 保存图副本
     nx.write_graphml(G, os.path.join(output_dir, 'composition_graph.graphml'))
     
     print(f"\n✅ Dataset preparation complete!")
