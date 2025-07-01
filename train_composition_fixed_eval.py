@@ -241,7 +241,8 @@ def main():
     
     print(f"Vocabulary size: {vocab_size}")
     print(f"Block size: {block_size}")
-    print(f"Character vocabulary: {[c for c in stoi.keys() if c not in ['[PAD]', '\\n']]}")
+    chars = [c for c in stoi.keys() if c not in ['[PAD]', '\n']]
+    print(f"Character vocabulary: {chars}")
     
     # 加载图
     G = nx.read_graphml(os.path.join(data_dir, 'composition_graph.graphml'))
