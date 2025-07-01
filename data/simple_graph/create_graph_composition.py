@@ -1,4 +1,4 @@
-# data/simple_graph/create_graph_composition.py
+# create_graph_composition.py (修复版本)
 import networkx as nx
 import random
 import os
@@ -8,12 +8,6 @@ import numpy as np
 def generate_composition_graph(num_nodes_per_stage, edge_prob_within, edge_prob_between, num_stages=3):
     """
     创建一个分层的有向图，用于测试组合能力
-    
-    Args:
-        num_nodes_per_stage: 每个阶段的节点数
-        edge_prob_within: 组内边的概率
-        edge_prob_between: 组间边的概率
-        num_stages: 阶段数（默认3）
     """
     G = nx.DiGraph()
     total_nodes = num_nodes_per_stage * num_stages
@@ -48,41 +42,41 @@ def generate_composition_graph(num_nodes_per_stage, edge_prob_within, edge_prob_
 
 def get_reachable_nodes(G, target_node):
     """获取可以到达目标节点的所有节点"""
-    TC = nx.transitive_closure(G)
-    reachable_from = TC.predecessors(target_node)
-    return list(reachable_from)
+    # 使用反向图来找到所有能到达target的节点
+    G_reverse = G.reverse()
+    reachable = set(nx.descendants(G_reverse, target_node))
+    return list(reachable)
 
 def obtain_reachability(G):
     """计算所有节点的可达性"""
     reachability = {}
     pairs = 0
     for node in G.nodes():
-        reachability[node] = get_reachable_nodes(G, node)
-        pairs += len(reachability[node])
+        reachable_nodes = get_reachable_nodes(G, node)
+        reachability[node] = reachable_nodes
+        pairs += len(reachable_nodes)
     return reachability, pairs
 
-def random_walk(G, source_node, target_node, reachability, max_attempts=10):
-    """在图中执行随机游走"""
+def can_reach(G, source, target):
+    """检查source是否能到达target"""
+    try:
+        nx.shortest_path(G, source, target)
+        return True
+    except nx.NetworkXNoPath:
+        return False
+
+def random_walk(G, source_node, target_node, max_attempts=10):
+    """在图中执行随机游走生成路径"""
     for _ in range(max_attempts):
-        path = [source_node]
-        current = source_node
-        visited = set([source_node])
-        
-        while current != target_node and len(path) < 100:
-            neighbors = list(G.successors(current))
-            # 只选择能到达目标的邻居
-            valid_neighbors = [n for n in neighbors if n in reachability[target_node] or n == target_node]
-            valid_neighbors = [n for n in valid_neighbors if n not in visited]
+        try:
+            # 使用最短路径作为基础
+            shortest_path = nx.shortest_path(G, source_node, target_node)
             
-            if not valid_neighbors:
-                break
-                
-            current = random.choice(valid_neighbors)
-            path.append(current)
-            visited.add(current)
-            
-            if current == target_node:
-                return path
+            # 可以在这里添加一些随机性，比如偶尔偏离最短路径
+            # 但为了确保能生成有效路径，我们先使用最短路径
+            return shortest_path
+        except nx.NetworkXNoPath:
+            return None
     
     return None
 
@@ -99,59 +93,81 @@ def create_composition_dataset(G, stages, reachability, train_paths_per_pair=10)
     
     # 训练集：S1→S2 的路径
     print("Generating S1→S2 training paths...")
+    s1_s2_count = 0
     for source in S1:
         for target in S2:
-            if target in reachability[target] and source in reachability[target]:
+            if can_reach(G, source, target):
                 # 添加多条路径
                 for _ in range(train_paths_per_pair):
-                    path = random_walk(G, source, target, reachability)
+                    path = random_walk(G, source, target)
                     if path:
                         train_set.append([source, target] + path)
+                        s1_s2_count += 1
+    print(f"  Generated {s1_s2_count} S1→S2 paths")
     
     # 训练集：S2→S3 的路径
     print("Generating S2→S3 training paths...")
+    s2_s3_count = 0
     for source in S2:
         for target in S3:
-            if target in reachability[target] and source in reachability[target]:
+            if can_reach(G, source, target):
                 # 添加多条路径
                 for _ in range(train_paths_per_pair):
-                    path = random_walk(G, source, target, reachability)
+                    path = random_walk(G, source, target)
                     if path:
                         train_set.append([source, target] + path)
+                        s2_s3_count += 1
+    print(f"  Generated {s2_s3_count} S2→S3 paths")
     
     # 测试集：S1→S3 的路径（测试组合能力）
     print("Generating S1→S3 test paths...")
+    s1_s3_count = 0
     for source in S1:
         for target in S3:
-            if target in reachability[target] and source in reachability[target]:
-                path = random_walk(G, source, target, reachability)
+            if can_reach(G, source, target):
+                path = random_walk(G, source, target)
                 if path:
-                    test_set.append([source, target] + path)
+                    # 验证路径确实经过S2
+                    has_s2 = any(node in S2 for node in path[1:-1])
+                    if has_s2:
+                        test_set.append([source, target] + path)
+                        s1_s3_count += 1
+    print(f"  Generated {s1_s3_count} S1→S3 paths")
     
     # 可选：添加一些S1→S2和S2→S3的测试路径以验证基础能力
     print("Adding some basic test paths...")
+    basic_count = 0
+    
     # S1→S2测试路径（少量）
     for _ in range(5):
         source = random.choice(S1)
         target = random.choice(S2)
-        if target in reachability[target] and source in reachability[target]:
-            path = random_walk(G, source, target, reachability)
+        if can_reach(G, source, target):
+            path = random_walk(G, source, target)
             if path:
                 test_set.append([source, target] + path)
+                basic_count += 1
     
     # S2→S3测试路径（少量）
     for _ in range(5):
         source = random.choice(S2)
         target = random.choice(S3)
-        if target in reachability[target] and source in reachability[target]:
-            path = random_walk(G, source, target, reachability)
+        if can_reach(G, source, target):
+            path = random_walk(G, source, target)
             if path:
                 test_set.append([source, target] + path)
+                basic_count += 1
+    
+    print(f"  Added {basic_count} basic test paths")
     
     return train_set, test_set
 
 def obtain_stats(dataset, stage_info=None):
     """统计数据集信息"""
+    if not dataset:
+        print("  Dataset is empty!")
+        return
+        
     max_len = 0
     pairs = set()
     stage_transitions = {'S1->S2': 0, 'S2->S3': 0, 'S1->S3': 0}
@@ -176,11 +192,15 @@ def obtain_stats(dataset, stage_info=None):
         length = len(data)
         len_stats[length] += 1
     
-    print(f'Number of source-target pairs: {len(pairs)}')
-    print(f'Stage transitions: {stage_transitions}')
+    print(f'  Number of unique source-target pairs: {len(pairs)}')
+    print(f'  Total paths: {len(dataset)}')
+    print(f'  Stage transitions: {stage_transitions}')
+    
+    # 打印路径长度分布
+    print('  Path length distribution:')
     for ii in range(3, len(len_stats)):
         if len_stats[ii] > 0:
-            print(f'  Paths with length {ii-2}: {len_stats[ii]}')
+            print(f'    Length {ii-2}: {len_stats[ii]} paths')
 
 def format_data(data):
     """格式化数据为字符串"""
@@ -222,6 +242,16 @@ if __name__ == "__main__":
     reachability, feasible_pairs = obtain_reachability(G)
     print(f"Total feasible pairs: {feasible_pairs}")
     
+    # 验证图的连通性
+    s1_to_s2_pairs = sum(1 for s1 in stages[0] for s2 in stages[1] if can_reach(G, s1, s2))
+    s2_to_s3_pairs = sum(1 for s2 in stages[1] for s3 in stages[2] if can_reach(G, s2, s3))
+    s1_to_s3_pairs = sum(1 for s1 in stages[0] for s3 in stages[2] if can_reach(G, s1, s3))
+    
+    print(f"\nConnectivity check:")
+    print(f"  S1→S2 pairs: {s1_to_s2_pairs}")
+    print(f"  S2→S3 pairs: {s2_to_s3_pairs}")
+    print(f"  S1→S3 pairs: {s1_to_s3_pairs}")
+    
     # 创建数据集
     train_set, test_set = create_composition_dataset(G, stages, reachability, args.train_paths_per_pair)
     
@@ -253,3 +283,14 @@ if __name__ == "__main__":
         pickle.dump(stage_info, f)
     
     print(f"\nDataset created successfully in {folder_name}/")
+    
+    # 打印一些示例路径
+    if train_set:
+        print("\nSample training paths:")
+        for i in range(min(3, len(train_set))):
+            print(f"  {train_set[i][:10]}..." if len(train_set[i]) > 10 else f"  {train_set[i]}")
+    
+    if test_set:
+        print("\nSample test paths:")
+        for i in range(min(3, len(test_set))):
+            print(f"  {test_set[i][:10]}..." if len(test_set[i]) > 10 else f"  {test_set[i]}")
