@@ -1,4 +1,6 @@
-# train_composition_complete.py
+# train_composition_fixed.py - 修复版的完整训练脚本
+# 这是一个完整的文件，包含了所有修复
+
 import os
 import time
 import math
@@ -31,14 +33,11 @@ def parse_args():
     parser.add_argument('--train_paths_per_pair', type=int, default=10)
     parser.add_argument('--checkpoint_interval', type=int, default=2000)
     parser.add_argument('--seed', type=int, default=42)
-    # 训练策略
     parser.add_argument('--training_mode', type=str, default='standard', 
-                      choices=['standard', 'mixed', 'curriculum'],
-                      help='Training mode: standard, mixed (with S1->S3), or curriculum')
-    parser.add_argument('--mixed_ratio', type=float, default=0.1,
-                      help='Ratio of S1->S3 paths in mixed training')
-    parser.add_argument('--temperature', type=float, default=0.8, help='Generation temperature')
-    parser.add_argument('--top_k', type=int, default=50, help='Top-k for generation')
+                      choices=['standard', 'mixed', 'curriculum'])
+    parser.add_argument('--mixed_ratio', type=float, default=0.1)
+    parser.add_argument('--temperature', type=float, default=0.8)
+    parser.add_argument('--top_k', type=int, default=50)
     return parser.parse_args()
 
 def set_seed(seed):
@@ -51,8 +50,11 @@ def set_seed(seed):
 
 def encode(s, stoi):
     """编码字符串为token序列"""
-    ss = s.split(" ")
-    return [stoi[ch] for ch in ss if ch in stoi]
+    tokens = []
+    for ch in s.split():
+        if ch in stoi:
+            tokens.append(stoi[ch])
+    return tokens
 
 def decode(l, itos):
     """解码token序列为字符串"""
@@ -104,9 +106,7 @@ def analyze_composition_error(pred_path, target_path, stages):
 
 @torch.no_grad()
 def evaluate_tf_by_type(model, val_data, stages, stoi, itos, device, block_size, batch_size=64):
-    """
-    在验证集上分别评估不同路径类型的Teacher Forcing准确率
-    """
+    """在验证集上分别评估不同路径类型的Teacher Forcing准确率"""
     model.eval()
     
     S1, S2, S3 = stages
@@ -120,47 +120,57 @@ def evaluate_tf_by_type(model, val_data, stages, stoi, itos, device, block_size,
         'overall': {'correct': 0, 'total': 0}
     }
     
-    # 采样多个批次进行评估
-    num_eval_batches = 20
+    # 遍历验证数据
+    num_sequences = min(len(val_data) // data_size, 200)  # 评估前200个序列
     
-    for _ in range(num_eval_batches):
-        # 获取批次数据
-        ix = torch.randint((len(val_data) - data_size) // data_size, (batch_size,)) * data_size
+    for seq_idx in range(num_sequences):
+        start_idx = seq_idx * data_size
+        seq = val_data[start_idx:start_idx + data_size]
         
-        x = torch.stack([torch.from_numpy((val_data[i:i+block_size]).astype(np.int64)) for i in ix])
-        y = torch.stack([torch.from_numpy((val_data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
+        # 找到source和target
+        source_token = None
+        target_token = None
         
-        x, y = x.to(device), y.to(device)
+        for i, token in enumerate(seq):
+            if token > 1:  # 不是PAD(0)或newline(1)
+                if source_token is None:
+                    source_token = token
+                elif target_token is None:
+                    target_token = token
+                    break
         
-        # 获取模型预测
-        logits, _ = model(x, y)
+        if source_token is None or target_token is None:
+            continue
+            
+        # 转换为节点ID
+        source = source_token - 2
+        target = target_token - 2
+        
+        # 判断路径类型
+        path_type = classify_path_type(source, target, stages)
+        if path_type == 'other':
+            continue
+        
+        # 准备输入
+        x = torch.from_numpy(seq[:block_size].astype(np.int64)).unsqueeze(0).to(device)
+        y = torch.from_numpy(seq[1:1+block_size].astype(np.int64)).unsqueeze(0).to(device)
+        
+        # 获取预测
+        with torch.no_grad():
+            logits, _ = model(x, y)
+        
         preds = torch.argmax(logits, dim=-1)
         
-        # 分析每个序列
-        for batch_idx in range(batch_size):
-            # 解码序列以确定路径类型
-            seq = y[batch_idx].cpu().numpy()
+        # 计算准确率（只在非padding位置）
+        mask = y[0] != 0
+        if mask.sum() > 0:
+            correct = (preds[0][mask] == y[0][mask]).sum().item()
+            total = mask.sum().item()
             
-            # 找到序列中的source和target（前两个非padding的token）
-            non_pad_tokens = [t for t in seq if t > 1]  # >1 表示非padding和非newline
-            if len(non_pad_tokens) >= 2:
-                source = non_pad_tokens[0] - 2  # 减2因为token偏移
-                target = non_pad_tokens[1] - 2
-                
-                path_type = classify_path_type(source, target, stages)
-                
-                # 计算这个序列的准确率（只在非padding位置）
-                mask = y[batch_idx] != 0  # 非padding位置
-                if mask.sum() > 0:
-                    correct = (preds[batch_idx][mask] == y[batch_idx][mask]).sum().item()
-                    total = mask.sum().item()
-                    
-                    if path_type in results:
-                        results[path_type]['correct'] += correct
-                        results[path_type]['total'] += total
-                    
-                    results['overall']['correct'] += correct
-                    results['overall']['total'] += total
+            results[path_type]['correct'] += correct
+            results[path_type]['total'] += total
+            results['overall']['correct'] += correct
+            results['overall']['total'] += total
     
     # 计算准确率
     for path_type in results:
@@ -174,9 +184,7 @@ def evaluate_tf_by_type(model, val_data, stages, stoi, itos, device, block_size,
 
 @torch.no_grad()
 def evaluate_ar_by_type(model, test_file, stages, stoi, itos, device, G, max_eval=50):
-    """
-    在测试集上使用Autoregressive生成评估不同路径类型
-    """
+    """在测试集上使用Autoregressive生成评估不同路径类型"""
     model.eval()
     
     S1, S2, S3 = stages
@@ -219,41 +227,46 @@ def evaluate_ar_by_type(model, test_file, stages, stoi, itos, device, G, max_eva
             # 准备输入prompt
             prompt = f"{source} {target} {source}"
             prompt_ids = encode(prompt, stoi)
+            
+            if not prompt_ids:
+                continue
+                
             x = torch.tensor(prompt_ids, dtype=torch.long, device=device).unsqueeze(0)
             
             # 生成预测
-            with torch.no_grad():
-                y = model.generate(x, max_new_tokens=50, 
-                                  temperature=0.8, top_k=50)
-            
-            # 解码并解析
-            pred_str = decode(y[0].tolist(), itos)
-            pred_parts = pred_str.split()
-            
-            # 提取预测路径
             try:
-                # 找到换行符位置
-                if '\n' in pred_parts:
-                    newline_idx = pred_parts.index('\n')
-                    pred_path = [int(p) for p in pred_parts[:newline_idx] if p.isdigit()]
-                else:
-                    pred_path = [int(p) for p in pred_parts if p.isdigit()]
-            except:
+                with torch.no_grad():
+                    y = model.generate(x, max_new_tokens=30, 
+                                      temperature=args.temperature, 
+                                      top_k=args.top_k)
+                
+                # 解码并解析
+                pred_str = decode(y[0].tolist(), itos)
+                pred_parts = pred_str.split()
+                
+                # 提取预测路径
                 pred_path = []
-            
-            # 检查正确性
-            is_correct = False
-            if len(pred_path) >= 2:
-                if pred_path[0] == int(source) and pred_path[-1] == int(target):
-                    # 检查路径有效性
-                    if check_path_validity(G, pred_path):
-                        is_correct = True
-                        results[path_type]['correct'] += 1
-            
-            # 如果错误，分析错误类型
-            if not is_correct:
-                error_type = analyze_composition_error(pred_path, true_path, stages)
-                results[path_type]['errors'][error_type] += 1
+                for p in pred_parts:
+                    if p == '\n':
+                        break
+                    if p.isdigit():
+                        pred_path.append(int(p))
+                
+                # 检查正确性
+                is_correct = False
+                if len(pred_path) >= 2:
+                    if pred_path[0] == int(source) and pred_path[-1] == int(target):
+                        # 检查路径有效性
+                        if check_path_validity(G, pred_path):
+                            is_correct = True
+                            results[path_type]['correct'] += 1
+                
+                # 如果错误，分析错误类型
+                if not is_correct:
+                    error_type = analyze_composition_error(pred_path, true_path, stages)
+                    results[path_type]['errors'][error_type] += 1
+            except Exception as e:
+                results[path_type]['errors']['generation_error'] += 1
         
         # 计算准确率
         if results[path_type]['total'] > 0:
@@ -265,6 +278,7 @@ def evaluate_ar_by_type(model, test_file, stages, stoi, itos, device, G, max_eva
     return results
 
 def main():
+    global args  # 让evaluate_ar_by_type能访问args
     args = parse_args()
     set_seed(args.seed)
     
@@ -304,7 +318,7 @@ def main():
     
     stoi, itos = meta['stoi'], meta['itos']
     block_size = meta['block_size']
-    vocab_size = len(itos)
+    vocab_size = meta['vocab_size']
     
     # 加载图
     G = nx.read_graphml(os.path.join(data_dir, 'composition_graph.graphml'))
@@ -347,7 +361,10 @@ def main():
         data = train_data if split == 'train' else val_data
         data_size = block_size + 1
         
-        ix = torch.randint((len(data) - data_size) // data_size, (args.batch_size,)) * data_size
+        # 确保对齐到序列边界
+        num_sequences = len(data) // data_size
+        seq_indices = torch.randint(0, num_sequences, (args.batch_size,))
+        ix = seq_indices * data_size
         
         x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
         y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
@@ -496,11 +513,11 @@ def main():
     with open(os.path.join(out_dir, 'history.pkl'), 'wb') as f:
         pickle.dump(history, f)
     
-    # 绘制详细图表
-    plt.figure(figsize=(20, 12))
+    # 绘制图表（简化版）
+    plt.figure(figsize=(15, 10))
     
     # 1. 训练损失
-    plt.subplot(3, 4, 1)
+    plt.subplot(2, 3, 1)
     plt.plot(history['iter'], history['train_loss'], 'b-', label='Train')
     plt.plot(history['iter'], history['val_loss'], 'r-', label='Val')
     plt.xlabel('Iteration')
@@ -509,16 +526,8 @@ def main():
     plt.legend()
     plt.grid(True)
     
-    # 2. TF整体准确率
-    plt.subplot(3, 4, 2)
-    plt.plot(history['iter'], history['tf_overall'], 'g-', linewidth=2)
-    plt.xlabel('Iteration')
-    plt.ylabel('Accuracy')
-    plt.title('Teacher Forcing Overall Accuracy')
-    plt.grid(True)
-    
-    # 3. TF分类准确率
-    plt.subplot(3, 4, 3)
+    # 2. TF准确率
+    plt.subplot(2, 3, 2)
     plt.plot(history['iter'], history['tf_s1_s2'], 'b-', label='S1->S2', marker='o')
     plt.plot(history['iter'], history['tf_s2_s3'], 'g-', label='S2->S3', marker='s')
     plt.plot(history['iter'], history['tf_s1_s3'], 'r-', label='S1->S3', marker='^')
@@ -528,8 +537,8 @@ def main():
     plt.legend()
     plt.grid(True)
     
-    # 4. AR分类准确率
-    plt.subplot(3, 4, 4)
+    # 3. AR准确率
+    plt.subplot(2, 3, 3)
     plt.plot(history['iter'], history['ar_s1_s2'], 'b-', label='S1->S2', marker='o')
     plt.plot(history['iter'], history['ar_s2_s3'], 'g-', label='S2->S3', marker='s')
     plt.plot(history['iter'], history['ar_s1_s3'], 'r-', label='S1->S3', marker='^', linewidth=2)
@@ -539,8 +548,8 @@ def main():
     plt.legend()
     plt.grid(True)
     
-    # 5. TF vs AR对比 (S1->S3)
-    plt.subplot(3, 4, 5)
+    # 4. S1->S3对比
+    plt.subplot(2, 3, 4)
     plt.plot(history['iter'], history['tf_s1_s3'], 'b-', label='TF', marker='o')
     plt.plot(history['iter'], history['ar_s1_s3'], 'r-', label='AR', marker='s')
     plt.xlabel('Iteration')
@@ -549,62 +558,17 @@ def main():
     plt.legend()
     plt.grid(True)
     
-    # 6. 组合能力差距
-    plt.subplot(3, 4, 6)
-    basic_avg = [(h1 + h2) / 2 for h1, h2 in zip(history['ar_s1_s2'], history['ar_s2_s3'])]
-    composition_gap = [b - c for b, c in zip(basic_avg, history['ar_s1_s3'])]
-    plt.plot(history['iter'], composition_gap, 'purple', linewidth=2)
-    plt.axhline(y=0, color='k', linestyle='--', alpha=0.5)
-    plt.xlabel('Iteration')
-    plt.ylabel('Gap')
-    plt.title('Composition Gap (Basic Avg - S1->S3)')
-    plt.grid(True)
-    
-    # 7. 错误类型演变
-    plt.subplot(3, 4, 7)
-    if history['s1_s3_errors']:
-        error_types = set()
-        for errors in history['s1_s3_errors']:
-            error_types.update(errors.keys())
-        
-        for error_type in error_types:
-            counts = [errors.get(error_type, 0) for errors in history['s1_s3_errors']]
-            plt.plot(history['iter'], counts, label=error_type)
-        
+    # 5. 组合能力差距
+    plt.subplot(2, 3, 5)
+    if len(history['ar_s1_s2']) > 0:
+        basic_avg = [(h1 + h2) / 2 for h1, h2 in zip(history['ar_s1_s2'], history['ar_s2_s3'])]
+        composition_gap = [b - c for b, c in zip(basic_avg, history['ar_s1_s3'])]
+        plt.plot(history['iter'], composition_gap, 'purple', linewidth=2)
+        plt.axhline(y=0, color='k', linestyle='--', alpha=0.5)
         plt.xlabel('Iteration')
-        plt.ylabel('Count')
-        plt.title('S1->S3 Error Types')
-        plt.legend()
+        plt.ylabel('Gap')
+        plt.title('Composition Gap (Basic Avg - S1->S3)')
         plt.grid(True)
-    
-    # 8. 最终结果总结
-    plt.subplot(3, 4, 8)
-    plt.axis('off')
-    
-    summary_text = f"""
-Final Results Summary
-
-Training Mode: {args.training_mode}
-Model: {args.n_layer}L-{args.n_head}H-{args.n_embd}D
-
-Teacher Forcing (Validation):
-  Overall: {history['tf_overall'][-1]:.2%}
-  S1->S2: {history['tf_s1_s2'][-1]:.2%}
-  S2->S3: {history['tf_s2_s3'][-1]:.2%}
-  S1->S3: {history['tf_s1_s3'][-1]:.2%}
-
-Autoregressive (Test):
-  S1->S2: {history['ar_s1_s2'][-1]:.2%}
-  S2->S3: {history['ar_s2_s3'][-1]:.2%}
-  S1->S3: {history['ar_s1_s3'][-1]:.2%}
-
-Composition Gap: {composition_gap[-1]:.2%}
-"""
-    
-    plt.text(0.1, 0.5, summary_text, fontsize=11, family='monospace', 
-             verticalalignment='center')
-    
-    # 9-12: 更多可视化...
     
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, 'composition_results.png'), dpi=150)
@@ -625,28 +589,23 @@ Composition Gap: {composition_gap[-1]:.2%}
     print(f"  S1->S3: {history['ar_s1_s3'][-1]:.2%} ← Composition (AR)")
     
     # 组合能力评估
-    basic_performance = (history['ar_s1_s2'][-1] + history['ar_s2_s3'][-1]) / 2
-    composition_performance = history['ar_s1_s3'][-1]
-    
-    print(f"\nComposition Analysis:")
-    print(f"  Basic Path Average: {basic_performance:.2%}")
-    print(f"  Composition Performance: {composition_performance:.2%}")
-    print(f"  Composition Gap: {basic_performance - composition_performance:.2%}")
-    
-    if composition_performance < 0.1 and basic_performance > 0.8:
-        print("\n⚠️  Model shows severe lack of compositional generalization!")
-        print("  Despite learning S1->S2 and S2->S3 well, it cannot compose them into S1->S3.")
-    elif composition_performance > 0.5:
-        print("\n✅ Model demonstrates reasonable compositional ability!")
-    else:
-        print("\n🔶 Model shows limited compositional ability.")
+    if len(history['ar_s1_s2']) > 0:
+        basic_performance = (history['ar_s1_s2'][-1] + history['ar_s2_s3'][-1]) / 2
+        composition_performance = history['ar_s1_s3'][-1]
+        
+        print(f"\nComposition Analysis:")
+        print(f"  Basic Path Average: {basic_performance:.2%}")
+        print(f"  Composition Performance: {composition_performance:.2%}")
+        print(f"  Composition Gap: {basic_performance - composition_performance:.2%}")
+        
+        if composition_performance < 0.1 and basic_performance > 0.8:
+            print("\n⚠️  Model shows severe lack of compositional generalization!")
+        elif composition_performance > 0.5:
+            print("\n✅ Model demonstrates reasonable compositional ability!")
+        else:
+            print("\n🔶 Model shows limited compositional ability.")
     
     print(f"\nResults saved to: {out_dir}")
-    print(f"  - history.pkl: Complete training history")
-    print(f"  - composition_results.png: Visualization")
-    print(f"  - train.log: Training log")
-    
-    logger.info(f"Training complete. Final S1->S3: TF={history['tf_s1_s3'][-1]:.2%}, AR={history['ar_s1_s3'][-1]:.2%}")
 
 if __name__ == "__main__":
     main()
